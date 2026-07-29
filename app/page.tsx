@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { supabase } from "../lib/supabase";
 
 type Student = { id: number; name: string; team: string; role: string; salary: number; avatar: string; points: number; color: string };
 type Product = { id: number; name: string; price: number; stock: number; emoji: string };
@@ -39,6 +40,8 @@ export default function Home() {
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [productForm, setProductForm] = useState({ name: "", price: 5, stock: 10, emoji: "★" });
   const [statsMonth, setStatsMonth] = useState("2026-07");
+  const remoteLoaded = useRef(false);
+  const stateSnapshot = { students, products, transactions, settings };
 
   useEffect(() => {
     const saved = window.localStorage.getItem("praise-bank-data") ?? window.localStorage.getItem("praise-class-data");
@@ -50,8 +53,27 @@ export default function Home() {
       if (data.transactions) setTransactions(data.transactions);
       if (data.settings) { setSettings({ ...initialSettings, ...data.settings }); setSettingsForm({ ...initialSettings, ...data.settings }); }
     } catch { /* 기본값을 사용합니다. */ }
+    async function loadRemoteState() {
+      if (!supabase) { remoteLoaded.current = true; return; }
+      const { data, error } = await supabase.from("classroom_state").select("payload").eq("class_id", "main").maybeSingle();
+      if (!error && data?.payload) {
+        const remote = data.payload as Partial<typeof stateSnapshot>;
+        if (remote.students) setStudents(remote.students as Student[]);
+        if (remote.products) setProducts(remote.products as Product[]);
+        if (remote.transactions) setTransactions(remote.transactions as Transaction[]);
+        if (remote.settings) { const nextSettings = { ...initialSettings, ...remote.settings }; setSettings(nextSettings); setSettingsForm(nextSettings); }
+      }
+      remoteLoaded.current = true;
+    }
+    void loadRemoteState();
   }, []);
-  useEffect(() => { window.localStorage.setItem("praise-bank-data", JSON.stringify({ students, products, transactions, settings })); }, [students, products, transactions, settings]);
+  useEffect(() => {
+    window.localStorage.setItem("praise-bank-data", JSON.stringify(stateSnapshot));
+    if (!supabase || !remoteLoaded.current) return;
+    void supabase.from("classroom_state").upsert({ class_id: "main", payload: stateSnapshot, updated_at: new Date().toISOString() }).then(({ error }) => {
+      if (error) console.error("Supabase 저장 실패", error);
+    });
+  }, [students, products, transactions, settings]);
 
   const selected = students.find((student) => student.id === selectedId) ?? students[0];
   const classTotal = students.reduce((sum, student) => sum + student.points, 0);
