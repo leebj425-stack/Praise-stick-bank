@@ -14,12 +14,12 @@ drop policy if exists "classroom state public write" on public.classroom_state;
 create policy "classroom state public read"
   on public.classroom_state for select
   to anon, authenticated
-  using (class_id = 'main');
+  using (true);
 
 create policy "classroom state public write"
   on public.classroom_state for all
   to anon, authenticated
-  using (class_id = 'main')
-  with check (class_id = 'main');
+  using (true)
+  with check (true);
 
 grant select, insert, update, delete on public.classroom_state to anon, authenticated;

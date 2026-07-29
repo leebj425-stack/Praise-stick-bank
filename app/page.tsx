@@ -8,6 +8,7 @@ type Product = { id: number; name: string; price: number; stock: number; emoji: 
 type Transaction = { id: number; studentId: number; student: string; date: string; type: "salary" | "bonus" | "spend"; item: string; amount: number; balance: number; month?: string; productId?: number };
 type Settings = { className: string; teacherName: string; reward: string; goalPoints: number; reasons: string[]; sheetWebhookUrl: string };
 type Panel = "students" | "settings" | "payroll" | "bonus" | "store" | "products" | "history" | "stats" | "detail" | null;
+type TeacherSession = { name: string; classId: string };
 
 const colors = ["#f6c453", "#e98d9a", "#78a7d9", "#a3c98b", "#b89bdd", "#f0a66f", "#78b7aa"];
 const initialStudents: Student[] = [
@@ -22,7 +23,17 @@ const initialProducts: Product[] = [{ id: 1, name: "연필", price: 8, stock: 12
 const initialTransactions: Transaction[] = [{ id: 1, studentId: 1, student: "김민준", date: "2026-07-28", type: "salary", item: "칠판 담당 7월 월급", amount: 30, balance: 42, month: "2026-07" }, { id: 2, studentId: 2, student: "이서연", date: "2026-07-28", type: "bonus", item: "친구를 도왔어요", amount: 3, balance: 38 }, { id: 3, studentId: 3, student: "박지호", date: "2026-07-28", type: "spend", item: "연필 1개 구매", amount: -8, balance: 35 }];
 const initialSettings: Settings = { className: "햇살초등학교 · 3학년 2반", teacherName: "담임 선생님", reward: "운동장 놀이 시간 20분", goalPoints: 100, reasons: ["친구를 도왔어요", "수업에 집중했어요", "정리정돈을 잘했어요", "용기 있게 발표했어요", "스스로 약속을 지켰어요"], sheetWebhookUrl: "" };
 
+function makeClassId(name: string, pin: string) {
+  let hash = 0;
+  for (const char of `${name.trim().toLowerCase()}-${pin}`) hash = (hash * 31 + char.charCodeAt(0)) | 0;
+  return `teacher-${Math.abs(hash).toString(36)}`;
+}
+
 export default function Home() {
+  const [teacherSession, setTeacherSession] = useState<TeacherSession | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [loginForm, setLoginForm] = useState({ name: "", pin: "" });
+  const [loginError, setLoginError] = useState("");
   const [students, setStudents] = useState<Student[]>(initialStudents);
   const [products, setProducts] = useState<Product[]>(initialProducts);
   const [transactions, setTransactions] = useState<Transaction[]>(initialTransactions);
@@ -43,9 +54,32 @@ export default function Home() {
   const [statsMonth, setStatsMonth] = useState("2026-07");
   const remoteLoaded = useRef(false);
   const stateSnapshot = { students, products, transactions, settings };
+  const classId = teacherSession?.classId ?? "";
 
   useEffect(() => {
-    const saved = window.localStorage.getItem("praise-bank-data") ?? window.localStorage.getItem("praise-class-data");
+    try {
+      const savedSession = window.localStorage.getItem("praise-bank-teacher");
+      if (savedSession) setTeacherSession(JSON.parse(savedSession) as TeacherSession);
+    } catch { /* 로그인 세션이 없으면 로그인 화면을 표시합니다. */ }
+    setAuthReady(true);
+  }, []);
+
+  function loginTeacher() {
+    const name = loginForm.name.trim();
+    if (!name || !/^\d{4}$/.test(loginForm.pin)) { setLoginError("교사 이름과 4자리 숫자 PIN을 입력해주세요."); return; }
+    const session = { name, classId: makeClassId(name, loginForm.pin) };
+    window.localStorage.setItem("praise-bank-teacher", JSON.stringify(session));
+    setTeacherSession(session); setLoginError(""); remoteLoaded.current = false;
+  }
+
+  function logoutTeacher() {
+    window.localStorage.removeItem("praise-bank-teacher");
+    setTeacherSession(null); setPanel(null); remoteLoaded.current = false;
+  }
+
+  useEffect(() => {
+    if (!authReady || !classId) return;
+    const saved = window.localStorage.getItem(`praise-bank-data:${classId}`) ?? window.localStorage.getItem("praise-bank-data");
     if (!saved) return;
     try {
       const data = JSON.parse(saved);
@@ -56,7 +90,7 @@ export default function Home() {
     } catch { /* 기본값을 사용합니다. */ }
     async function loadRemoteState() {
       if (!supabase) { remoteLoaded.current = true; return; }
-      const { data, error } = await supabase.from("classroom_state").select("payload").eq("class_id", "main").maybeSingle();
+      const { data, error } = await supabase.from("classroom_state").select("payload").eq("class_id", classId).maybeSingle();
       if (!error && data?.payload) {
         const remote = data.payload as Partial<typeof stateSnapshot>;
         if (remote.students) setStudents(remote.students as Student[]);
@@ -65,7 +99,7 @@ export default function Home() {
         if (remote.settings) { const nextSettings = { ...initialSettings, ...remote.settings }; setSettings(nextSettings); setSettingsForm(nextSettings); }
       } else if (!error) {
         const seed = saved ? JSON.parse(saved) : stateSnapshot;
-        const { error: seedError } = await supabase.from("classroom_state").upsert({ class_id: "main", payload: seed, updated_at: new Date().toISOString() });
+        const { error: seedError } = await supabase.from("classroom_state").upsert({ class_id: classId, payload: seed, updated_at: new Date().toISOString() });
         if (seedError) { console.error("Supabase 초기 저장 실패", seedError); showNotice("Supabase 저장에 실패했어요. 환경변수를 확인해주세요."); }
       } else {
         console.error("Supabase 불러오기 실패", error);
@@ -74,14 +108,18 @@ export default function Home() {
       remoteLoaded.current = true;
     }
     void loadRemoteState();
-  }, []);
+  }, [authReady, classId]);
   useEffect(() => {
-    window.localStorage.setItem("praise-bank-data", JSON.stringify(stateSnapshot));
+    if (!authReady || !classId) return;
+    window.localStorage.setItem(`praise-bank-data:${classId}`, JSON.stringify(stateSnapshot));
     if (!supabase || !remoteLoaded.current) return;
-    void supabase.from("classroom_state").upsert({ class_id: "main", payload: stateSnapshot, updated_at: new Date().toISOString() }).then(({ error }) => {
+    void supabase.from("classroom_state").upsert({ class_id: classId, payload: stateSnapshot, updated_at: new Date().toISOString() }).then(({ error }) => {
       if (error) { console.error("Supabase 저장 실패", error); showNotice("Supabase 저장에 실패했어요."); }
     });
-  }, [students, products, transactions, settings]);
+  }, [authReady, classId, students, products, transactions, settings]);
+
+  if (!authReady) return null;
+  if (!teacherSession) return <main style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: 24, background: "#f7faf6" }}><section className="modal-card" style={{ width: "min(420px, 100%)" }}><p className="eyebrow">CLASS REWARD BANK</p><h1 style={{ margin: "0 0 8px", fontSize: 30 }}>교사 로그인</h1><p style={{ color: "#7b8781", fontSize: 13, lineHeight: 1.6 }}>교사 이름과 4자리 PIN으로 우리 반 학급 데이터를 불러옵니다.</p><div className="settings-form"><label>교사 이름<input autoFocus value={loginForm.name} onChange={(e) => setLoginForm({ ...loginForm, name: e.target.value })} placeholder="예: 김선생님" /></label><label>4자리 PIN<input inputMode="numeric" maxLength={4} type="password" value={loginForm.pin} onChange={(e) => setLoginForm({ ...loginForm, pin: e.target.value.replace(/\D/g, "").slice(0, 4) })} placeholder="숫자 4자리" /></label></div>{loginError && <p style={{ color: "#b9695d", fontSize: 12, marginTop: 14 }}>{loginError}</p>}<button className="primary-button" style={{ width: "100%", marginTop: 20 }} onClick={loginTeacher}>로그인</button></section></main>;
 
   const selected = students.find((student) => student.id === selectedId) ?? students[0];
   const classTotal = students.reduce((sum, student) => sum + student.points, 0);
@@ -160,7 +198,7 @@ export default function Home() {
   }
 
   return <main className="app-shell">
-    <nav className="topbar"><div className="brand"><span className="brand-mark">✦</span><span>칭찬막대 뱅크</span></div><div className="class-name">{settings.className}</div><div className="top-actions"><button className="nav-link active">오늘의 교실</button><button className="nav-link" onClick={() => setPanel("students")}>학생 관리</button><button className="nav-link" onClick={() => setPanel("settings")}>설정</button><div className="teacher"><span className="teacher-dot">담</span> {settings.teacherName}</div></div></nav>
+    <nav className="topbar"><div className="brand"><span className="brand-mark">✦</span><span>칭찬막대 뱅크</span></div><div className="class-name">{settings.className}</div><div className="top-actions"><button className="nav-link active">오늘의 교실</button><button className="nav-link" onClick={() => setPanel("students")}>학생 관리</button><button className="nav-link" onClick={() => setPanel("settings")}>설정</button><div className="teacher"><span className="teacher-dot">담</span> {teacherSession.name}<button className="text-button" onClick={logoutTeacher}>로그아웃</button></div></div></nav>
     <section className="hero"><div><p className="eyebrow">CLASS REWARD BANK · {monthLabel}</p><h1>우리 반의 좋은 마음을<br /><em>차곡차곡 모아보세요.</em></h1><p className="hero-copy">역할 월급부터 보너스, 문방구 사용까지 한눈에 관리해요.</p></div><div className="hero-art"><div className="sun">☀</div><div className="cloud cloud-one" /><div className="cloud cloud-two" /><div className="hill hill-back" /><div className="hill hill-front" /><div className="flower flower-one">✿</div><div className="flower flower-two">✿</div></div></section>
     <div className="bank-summary"><div className="summary-card"><span className="summary-icon">◉</span><div><small>전체 학생 잔액</small><strong>{classTotal} <em>막대</em></strong></div></div><div className="summary-card"><span className="summary-icon salary-icon">＋</span><div><small>이번 달 월급 지급</small><strong>{transactions.filter((t) => t.type === "salary" && t.month === month).length} <em>/ {students.length}명</em></strong></div></div><div className="summary-card"><span className="summary-icon store-icon">⌁</span><div><small>이번 달 사용 금액</small><strong>{Math.abs(transactions.filter((t) => t.type === "spend").reduce((sum, t) => sum + t.amount, 0))} <em>막대</em></strong></div></div><div className="summary-progress"><div><small>우리 반 보상까지</small><strong>{progress}%</strong></div><div className="progress-track"><span style={{ width: `${progress}%` }} /></div></div></div>
     {(lowBalanceStudents.length > 0 || duplicatePayrollCount || sheetStatus === "error") && <div className="alert-strip">{lowBalanceStudents.length > 0 && <span className="alert-item warning">⚠ 잔액 부족: {lowBalanceStudents.map((student) => student.name).join(", ")}</span>}{duplicatePayrollCount && <span className="alert-item danger-alert">⚠ 이번 달 월급 중복 지급을 확인하세요.</span>}{sheetStatus === "error" && <span className="alert-item danger-alert">⚠ Google Sheets 전송에 실패했어요.</span>}</div>}
