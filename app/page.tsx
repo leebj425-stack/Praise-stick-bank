@@ -62,6 +62,13 @@ export default function Home() {
         if (remote.products) setProducts(remote.products as Product[]);
         if (remote.transactions) setTransactions(remote.transactions as Transaction[]);
         if (remote.settings) { const nextSettings = { ...initialSettings, ...remote.settings }; setSettings(nextSettings); setSettingsForm(nextSettings); }
+      } else if (!error) {
+        const seed = saved ? JSON.parse(saved) : stateSnapshot;
+        const { error: seedError } = await supabase.from("classroom_state").upsert({ class_id: "main", payload: seed, updated_at: new Date().toISOString() });
+        if (seedError) { console.error("Supabase 초기 저장 실패", seedError); showNotice("Supabase 저장에 실패했어요. 환경변수를 확인해주세요."); }
+      } else {
+        console.error("Supabase 불러오기 실패", error);
+        showNotice("Supabase 연결에 실패했어요.");
       }
       remoteLoaded.current = true;
     }
@@ -71,7 +78,7 @@ export default function Home() {
     window.localStorage.setItem("praise-bank-data", JSON.stringify(stateSnapshot));
     if (!supabase || !remoteLoaded.current) return;
     void supabase.from("classroom_state").upsert({ class_id: "main", payload: stateSnapshot, updated_at: new Date().toISOString() }).then(({ error }) => {
-      if (error) console.error("Supabase 저장 실패", error);
+      if (error) { console.error("Supabase 저장 실패", error); showNotice("Supabase 저장에 실패했어요."); }
     });
   }, [students, products, transactions, settings]);
 
